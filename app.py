@@ -1,65 +1,74 @@
-
-from vocabulary import Vocabulary, iVocabulary
-
 import streamlit as st
 import re
+from vocabulary import Vocabulary, iVocabulary
 import torch
 import torch.nn as nn
 
 # Initialize the Streamlit app
-st.title("Next Word Prediction")
+st.title("Next Word Prediction Application")
 
-# User input for text and model configuration
-input_text = st.text_input("Enter the input text:", "Once upon a time")
-max_len = st.slider("Length of predicted text", 60, 150, value=30)
-
-# Clean input text
+# User input
+input_text = st.text_input("Enter the input text:", "There was a king")
+context_length = st.selectbox("Context length", [5, 10, 15])
+embedding_dim = st.selectbox("Embedding dimension", [64, 128])
+activation_function = st.selectbox("Activation function", ["relu", "tanh"])
+max_len = st.number_input("Maximum length of predicted text", min_value=0, max_value=1000, value=30)
 input_text = re.sub(r'[^a-zA-Z0-9 \.]', '', input_text).lower()
 
-# Model parameters
-embedding_dim, context_length, activation_function = 64, 10, 'relu'
-
-# Load model checkpoint to get vocab size
-checkpoint_path = f"models/model_{embedding_dim}_{context_length}_{activation_function}.pth"
-checkpoint = torch.load(checkpoint_path, map_location=torch.device("cpu"))
-vocab_size = checkpoint['emb.weight'].shape[0]
-
-# Define Model
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-class NextWord(nn.Module):
-    def __init__(self, block_size, vocab_size, emb_dim, hidden_size):
-        super().__init__()
-        self.emb = nn.Embedding(vocab_size, emb_dim)
-        self.lin1 = nn.Linear(block_size * emb_dim, hidden_size)
-        self.lin2 = nn.Linear(hidden_size, vocab_size)
-        self.act = nn.ReLU() if activation_function == 'relu' else nn.Tanh()
 
-    def forward(self, x):
-        x = self.emb(x).view(x.shape[0], -1)
-        x = self.act(self.lin1(x))
-        return self.lin2(x)
+if activation_function == 'relu':
+    class NextWord(nn.Module):
+        def __init__(self, block_size, vocab_size, emb_dim, hidden_size):
+            super().__init__()
+            self.emb = nn.Embedding(vocab_size, emb_dim)
+            self.lin1 = nn.Linear(block_size * emb_dim, hidden_size)
+            self.lin2 = nn.Linear(hidden_size, vocab_size)
+            self.relu = nn.ReLU()
 
-# Instantiate the model with the correct vocab size
-pred_model = NextWord(context_length, vocab_size, embedding_dim, 1024).to(device)
-pred_model.load_state_dict(checkpoint)
+        def forward(self, x):
+            x = self.emb(x).view(x.shape[0], -1)
+            x = self.relu(self.lin1(x))
+            return self.lin2(x)
 
-# Generate text function remains the same
-def generate_text(model, vocab, ivocab, block_size, user_input, max_len=30):
-    context = [vocab.get(word, 0) for word in user_input.split()]
-    context = context[-block_size:] if len(context) >= block_size else [0] * (block_size - len(context)) + context
-    generated = ' '.join([ivocab.get(idx, '') for idx in context]).strip()
+    pred_model = NextWord(context_length, len(Vocabulary), embedding_dim, 1024).to(device)
+    pred_model.load_state_dict(torch.load(f"models/model_{embedding_dim}_{context_length}_relu.pth", map_location=device))
 
-    for _ in range(max_len):
+if activation_function == 'tanh':
+    class NextWord(nn.Module):
+        def __init__(self, block_size, vocab_size, emb_dim, hidden_size):
+            super().__init__()
+            self.emb = nn.Embedding(vocab_size, emb_dim)
+            self.lin1 = nn.Linear(block_size * emb_dim, hidden_size)
+            self.lin2 = nn.Linear(hidden_size, vocab_size)
+            self.tanh = nn.Tanh()
+
+        def forward(self, x):
+            x = self.emb(x).view(x.shape[0], -1)
+            x = self.tanh(self.lin1(x))
+            return self.lin2(x)
+
+    pred_model = NextWord(context_length, len(Vocabulary), embedding_dim, 1024).to(device)
+    pred_model.load_state_dict(torch.load(f"models/model_{embedding_dim}_{context_length}_tanh.pth", map_location=device))
+
+def generate_para(model, Vocabulary, iVocabulary, block_size, user_input=None, max_len=30):
+    if user_input:
+        context = [Vocabulary.get(word, 0) for word in user_input.split()]
+        context = context[-block_size:] if len(context) >= block_size else [0] * (block_size - len(context)) + context
+    else:
+        context = [0] * block_size
+
+    new_para = ' '.join([iVocabulary.get(idx, '') for idx in context]).strip()
+    for i in range(max_len):
         x = torch.tensor(context).view(1, -1).to(device)
         y_pred = model(x)
         ix = torch.distributions.categorical.Categorical(logits=y_pred).sample().item()
-        word = ivocab[ix]
-        generated += " " + word
+        word = iVocabulary[ix]
+        new_para = new_para + " " + word
         context = context[1:] + [ix]
 
-    return generated
+    return new_para
 
-# Generate and display text on button click
-if st.button("Generate"):
-    predicted_text = generate_text(pred_model, Vocabulary, iVocabulary, context_length, input_text, max_len)
-    st.write(predicted_text)
+if st.button("Generate Prediction"):
+    predicted_text = generate_para(pred_model, Vocabulary, iVocabulary, context_length, input_text, max_len)
+    st.write("Predicted Text:", predicted_text)
